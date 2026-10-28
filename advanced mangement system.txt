@@ -1,0 +1,724 @@
+"""
+ADVANCED STUDENT MANAGEMENT SYSTEM
+Features:
+1. Admin login + change password
+2. Add, update, delete, search students
+3. Attendance report
+4. Student ranking
+5. CGPA calculator (subject grade points + credits)
+6. Assignment tracker
+7. Student report-card generator (text report)
+8. Performance prediction (rule-based estimate, not a trained ML model)
+9. SQLite database persistence
+
+Run in VS Code terminal:
+    python student_management_system.py
+
+Default first-run login:
+    Username: admin
+    Password: admin123
+
+Security note:
+This beginner project stores the password as plain text in SQLite. Use only for
+practice/demo data; a real application should use secure password hashing.
+"""
+
+import sqlite3
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+from pathlib import Path
+from datetime import date
+
+
+DB_NAME = "students.db"
+
+
+class StudentManagementSystem:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Advanced Student Management System")
+        self.root.geometry("1200x760")
+        self.root.minsize(1000, 650)
+        self.db = sqlite3.connect(DB_NAME)
+        self.db.row_factory = sqlite3.Row
+        self.create_tables()
+        self.show_login()
+
+    def create_tables(self):
+        cur = self.db.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users(
+                username TEXT PRIMARY KEY,
+                password TEXT NOT NULL
+            )
+        """)
+        cur.execute("INSERT OR IGNORE INTO users(username,password) VALUES('admin','admin123')")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS students(
+                roll TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                branch TEXT NOT NULL,
+                semester TEXT NOT NULL,
+                phone TEXT,
+                attendance REAL NOT NULL DEFAULT 0,
+                marks REAL NOT NULL DEFAULT 0
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS subjects(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                roll TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                grade_point REAL NOT NULL,
+                credits REAL NOT NULL,
+                FOREIGN KEY(roll) REFERENCES students(roll) ON DELETE CASCADE
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS assignments(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                roll TEXT NOT NULL,
+                title TEXT NOT NULL,
+                due_date TEXT,
+                status TEXT NOT NULL DEFAULT 'Pending',
+                marks REAL,
+                FOREIGN KEY(roll) REFERENCES students(roll) ON DELETE CASCADE
+            )
+        """)
+        self.db.commit()
+
+    # ---------------- LOGIN ----------------
+    def show_login(self):
+        for w in self.root.winfo_children():
+            w.destroy()
+        frame = ttk.LabelFrame(self.root, text="Administrator Login", padding=24)
+        frame.place(relx=0.5, rely=0.5, anchor="center")
+        ttk.Label(frame, text="ADVANCED STUDENT MANAGEMENT SYSTEM",
+                  font=("Arial", 17, "bold")).grid(row=0, column=0, columnspan=2, pady=(0, 18))
+        ttk.Label(frame, text="Username").grid(row=1, column=0, sticky="w", padx=5, pady=7)
+        ttk.Label(frame, text="Password").grid(row=2, column=0, sticky="w", padx=5, pady=7)
+        self.login_username = tk.StringVar(value="admin")
+        self.login_password = tk.StringVar()
+        ttk.Entry(frame, textvariable=self.login_username, width=28).grid(row=1, column=1, padx=5, pady=7)
+        p = ttk.Entry(frame, textvariable=self.login_password, show="*", width=28)
+        p.grid(row=2, column=1, padx=5, pady=7)
+        p.bind("<Return>", lambda _e: self.login())
+        ttk.Button(frame, text="Login", command=self.login).grid(
+            row=3, column=0, columnspan=2, sticky="ew", padx=5, pady=12)
+        ttk.Label(frame, text="First run: admin / admin123", foreground="gray").grid(
+            row=4, column=0, columnspan=2)
+        ttk.Label(frame, text="Change the default password after login.", foreground="gray").grid(
+            row=5, column=0, columnspan=2, pady=(4, 0))
+
+    def login(self):
+        row = self.db.execute(
+            "SELECT username FROM users WHERE username=? AND password=?",
+            (self.login_username.get().strip(), self.login_password.get())
+        ).fetchone()
+        if row:
+            self.current_username = row["username"]
+            self.build_dashboard()
+        else:
+            messagebox.showerror("Login failed", "Incorrect username or password.")
+
+    def change_password(self):
+        win = tk.Toplevel(self.root)
+        win.title("Change Password")
+        win.resizable(False, False)
+        frame = ttk.Frame(win, padding=14)
+        frame.pack()
+        old, new, confirm = tk.StringVar(), tk.StringVar(), tk.StringVar()
+        for i, (label, var) in enumerate([
+            ("Current password", old), ("New password", new), ("Confirm new password", confirm)
+        ]):
+            ttk.Label(frame, text=label).grid(row=i, column=0, sticky="w", padx=5, pady=5)
+            ttk.Entry(frame, textvariable=var, show="*", width=26).grid(row=i, column=1, padx=5, pady=5)
+
+        def save():
+            row = self.db.execute(
+                "SELECT username FROM users WHERE username=? AND password=?",
+                (self.current_username, old.get())
+            ).fetchone()
+            if not row:
+                messagebox.showerror("Error", "Current password is incorrect.", parent=win)
+                return
+            if len(new.get()) < 6:
+                messagebox.showwarning("Weak password", "Use at least 6 characters.", parent=win)
+                return
+            if new.get() != confirm.get():
+                messagebox.showerror("Mismatch", "New passwords do not match.", parent=win)
+                return
+            self.db.execute("UPDATE users SET password=? WHERE username=?",
+                            (new.get(), self.current_username))
+            self.db.commit()
+            messagebox.showinfo("Success", "Password changed.", parent=win)
+            win.destroy()
+
+        ttk.Button(frame, text="Save Password", command=save).grid(
+            row=3, column=0, columnspan=2, sticky="ew", pady=10)
+
+    # ---------------- DASHBOARD ----------------
+    def build_dashboard(self):
+        for w in self.root.winfo_children():
+            w.destroy()
+        header = ttk.Frame(self.root, padding=10)
+        header.pack(fill="x")
+        ttk.Label(header, text="ADVANCED STUDENT MANAGEMENT SYSTEM",
+                  font=("Arial", 18, "bold")).pack(side="left")
+        ttk.Button(header, text="Change Password", command=self.change_password).pack(side="right", padx=4)
+        ttk.Button(header, text="Logout", command=self.show_login).pack(side="right", padx=4)
+
+        self.tabs = ttk.Notebook(self.root)
+        self.tabs.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.student_tab = ttk.Frame(self.tabs, padding=10)
+        self.report_tab = ttk.Frame(self.tabs, padding=10)
+        self.cgpa_tab = ttk.Frame(self.tabs, padding=10)
+        self.assignment_tab = ttk.Frame(self.tabs, padding=10)
+        self.tabs.add(self.student_tab, text="Students")
+        self.tabs.add(self.report_tab, text="Attendance & Ranking")
+        self.tabs.add(self.cgpa_tab, text="CGPA Calculator")
+        self.tabs.add(self.assignment_tab, text="Assignment Tracker")
+        self.build_student_tab()
+        self.build_report_tab()
+        self.build_cgpa_tab()
+        self.build_assignment_tab()
+        self.refresh_all()
+
+    # ---------------- STUDENT MANAGEMENT ----------------
+    def build_student_tab(self):
+        form = ttk.LabelFrame(self.student_tab, text="Student Details", padding=9)
+        form.pack(fill="x")
+        self.student_vars = {
+            "name": tk.StringVar(), "roll": tk.StringVar(), "branch": tk.StringVar(value="AI-DS"),
+            "semester": tk.StringVar(value="3rd"), "phone": tk.StringVar(),
+            "attendance": tk.StringVar(value="0"), "marks": tk.StringVar(value="0")
+        }
+        fields = [
+            ("Name", "name"), ("Roll Number (unique)", "roll"), ("Branch", "branch"),
+            ("Semester", "semester"), ("Phone", "phone"),
+            ("Attendance %", "attendance"), ("Marks / 100", "marks")
+        ]
+        for i, (label, key) in enumerate(fields):
+            r, c = divmod(i, 4)
+            c *= 2
+            ttk.Label(form, text=label).grid(row=r, column=c, sticky="w", padx=4, pady=5)
+            ttk.Entry(form, textvariable=self.student_vars[key], width=18).grid(
+                row=r, column=c+1, sticky="ew", padx=4, pady=5)
+        for c in range(8):
+            form.columnconfigure(c, weight=1)
+
+        btns = ttk.Frame(self.student_tab)
+        btns.pack(fill="x", pady=7)
+        for label, command in [
+            ("Add Student", self.add_student), ("Update Selected", self.update_student),
+            ("Delete Selected", self.delete_student), ("Clear Form", self.clear_student_form),
+            ("Generate Report Card", self.generate_report_card),
+            ("Predict Performance", self.predict_selected_student)
+        ]:
+            ttk.Button(btns, text=label, command=command).pack(side="left", padx=3)
+
+        search_frame = ttk.Frame(self.student_tab)
+        search_frame.pack(fill="x", pady=5)
+        ttk.Label(search_frame, text="Search name or roll:").pack(side="left")
+        self.search_var = tk.StringVar()
+        ent = ttk.Entry(search_frame, textvariable=self.search_var, width=28)
+        ent.pack(side="left", padx=7)
+        ent.bind("<KeyRelease>", lambda _e: self.load_students())
+        ttk.Button(search_frame, text="Show All", command=self.show_all_students).pack(side="left")
+
+        cols = ("roll", "name", "branch", "semester", "phone", "attendance", "marks", "grade")
+        self.student_tree = ttk.Treeview(self.student_tab, columns=cols, show="headings", height=13)
+        headings = ["Roll Number", "Name", "Branch", "Semester", "Phone", "Attendance %", "Marks / 100", "Grade"]
+        widths = [95, 145, 90, 80, 110, 100, 95, 65]
+        for col, heading, width in zip(cols, headings, widths):
+            self.student_tree.heading(col, text=heading)
+            self.student_tree.column(col, width=width, anchor="center")
+        self.student_tree.pack(fill="both", expand=True, pady=6)
+        self.student_tree.bind("<<TreeviewSelect>>", self.select_student)
+
+    @staticmethod
+    def grade_for(marks):
+        if marks >= 90: return "A+"
+        if marks >= 80: return "A"
+        if marks >= 70: return "B"
+        if marks >= 60: return "C"
+        if marks >= 50: return "D"
+        return "F"
+
+    def read_student_form(self):
+        v = self.student_vars
+        roll, name, branch, semester = (v[k].get().strip() for k in ("roll", "name", "branch", "semester"))
+        phone = v["phone"].get().strip()
+        if not all((roll, name, branch, semester)):
+            messagebox.showwarning("Missing details", "Roll, name, branch and semester are required.")
+            return None
+        try:
+            attendance = float(v["attendance"].get())
+            marks = float(v["marks"].get())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Attendance and marks must be numbers.")
+            return None
+        if not 0 <= attendance <= 100 or not 0 <= marks <= 100:
+            messagebox.showerror("Invalid range", "Attendance and marks must be between 0 and 100.")
+            return None
+        return roll, name, branch, semester, phone, attendance, marks
+
+    def add_student(self):
+        data = self.read_student_form()
+        if not data: return
+        try:
+            self.db.execute("""INSERT INTO students(roll,name,branch,semester,phone,attendance,marks)
+                               VALUES(?,?,?,?,?,?,?)""", data)
+            self.db.commit()
+            self.refresh_all()
+            self.clear_student_form()
+            messagebox.showinfo("Success", "Student added.")
+        except sqlite3.IntegrityError:
+            messagebox.showerror("Duplicate roll", "That roll number already exists.")
+
+    def update_student(self):
+        data = self.read_student_form()
+        if not data: return
+        roll, name, branch, semester, phone, attendance, marks = data
+        cur = self.db.execute("""UPDATE students SET name=?,branch=?,semester=?,phone=?,attendance=?,marks=?
+                                 WHERE roll=?""",
+                              (name, branch, semester, phone, attendance, marks, roll))
+        self.db.commit()
+        if cur.rowcount == 0:
+            messagebox.showwarning("Not found", "Select an existing student or add them first.")
+        else:
+            self.refresh_all()
+            messagebox.showinfo("Updated", "Student record updated.")
+
+    def delete_student(self):
+        selected = self.student_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select student", "Select a student row first.")
+            return
+        roll = self.student_tree.item(selected[0], "values")[0]
+        if messagebox.askyesno("Confirm", f"Delete student {roll} and their subjects/assignments?"):
+            self.db.execute("DELETE FROM students WHERE roll=?", (roll,))
+            self.db.execute("DELETE FROM subjects WHERE roll=?", (roll,))
+            self.db.execute("DELETE FROM assignments WHERE roll=?", (roll,))
+            self.db.commit()
+            self.refresh_all()
+            self.clear_student_form()
+
+    def select_student(self, _event=None):
+        selected = self.student_tree.selection()
+        if not selected: return
+        vals = self.student_tree.item(selected[0], "values")
+        for key, value in zip(
+            ("roll", "name", "branch", "semester", "phone", "attendance", "marks"),
+            vals[:7]
+        ):
+            self.student_vars[key].set(value)
+
+    def clear_student_form(self):
+        for key, default in {
+            "name": "", "roll": "", "branch": "AI-DS", "semester": "3rd",
+            "phone": "", "attendance": "0", "marks": "0"
+        }.items():
+            self.student_vars[key].set(default)
+        if hasattr(self, "student_tree"):
+            for item in self.student_tree.selection():
+                self.student_tree.selection_remove(item)
+
+    def show_all_students(self):
+        self.search_var.set("")
+        self.load_students()
+
+    def load_students(self):
+        if not hasattr(self, "student_tree"): return
+        for item in self.student_tree.get_children():
+            self.student_tree.delete(item)
+        search = self.search_var.get().strip() if hasattr(self, "search_var") else ""
+        if search:
+            rows = self.db.execute("""SELECT * FROM students WHERE roll LIKE ? OR name LIKE ?
+                                      ORDER BY name""", (f"%{search}%", f"%{search}%")).fetchall()
+        else:
+            rows = self.db.execute("SELECT * FROM students ORDER BY name").fetchall()
+        for s in rows:
+            self.student_tree.insert("", "end", values=(
+                s["roll"], s["name"], s["branch"], s["semester"], s["phone"],
+                f'{s["attendance"]:.1f}', f'{s["marks"]:.1f}', self.grade_for(s["marks"])
+            ))
+
+    # ---------------- REPORTS / RANKING / PREDICTION ----------------
+    def build_report_tab(self):
+        actions = ttk.Frame(self.report_tab)
+        actions.pack(fill="x", pady=(0, 8))
+        ttk.Button(actions, text="Refresh Attendance Report", command=self.load_attendance_report).pack(side="left", padx=3)
+        ttk.Button(actions, text="Show Student Ranking", command=self.load_ranking).pack(side="left", padx=3)
+        ttk.Button(actions, text="Export Current Report to CSV", command=self.export_report_csv).pack(side="left", padx=3)
+        ttk.Button(actions, text="Performance Summary", command=self.performance_summary).pack(side="left", padx=3)
+        ttk.Label(self.report_tab, text="Attendance report lists students below 75% attendance with a status.",
+                  foreground="gray").pack(anchor="w", pady=(0, 5))
+        cols = ("rank", "roll", "name", "attendance", "marks", "grade", "status")
+        self.report_tree = ttk.Treeview(self.report_tab, columns=cols, show="headings", height=20)
+        for col, title, width in [
+            ("rank", "Rank", 65), ("roll", "Roll", 100), ("name", "Name", 180),
+            ("attendance", "Attendance %", 120), ("marks", "Marks", 100),
+            ("grade", "Grade", 90), ("status", "Attendance Status", 180)
+        ]:
+            self.report_tree.heading(col, text=title)
+            self.report_tree.column(col, width=width, anchor="center")
+        self.report_tree.pack(fill="both", expand=True)
+
+    def load_attendance_report(self):
+        for i in self.report_tree.get_children(): self.report_tree.delete(i)
+        rows = self.db.execute("SELECT * FROM students ORDER BY attendance ASC, name").fetchall()
+        for rank, s in enumerate(rows, 1):
+            status = "Low attendance" if s["attendance"] < 75 else "Satisfactory"
+            self.report_tree.insert("", "end", values=(
+                rank, s["roll"], s["name"], f'{s["attendance"]:.1f}',
+                f'{s["marks"]:.1f}', self.grade_for(s["marks"]), status
+            ))
+
+    def load_ranking(self):
+        for i in self.report_tree.get_children(): self.report_tree.delete(i)
+        rows = self.db.execute("SELECT * FROM students ORDER BY marks DESC, name ASC").fetchall()
+        for rank, s in enumerate(rows, 1):
+            status = "Low attendance" if s["attendance"] < 75 else "Satisfactory"
+            self.report_tree.insert("", "end", values=(
+                rank, s["roll"], s["name"], f'{s["attendance"]:.1f}',
+                f'{s["marks"]:.1f}', self.grade_for(s["marks"]), status
+            ))
+
+    def export_report_csv(self):
+        rows = [self.report_tree.item(i, "values") for i in self.report_tree.get_children()]
+        if not rows:
+            messagebox.showwarning("No report", "Show the attendance report or ranking first.")
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")], initialfile="student_report.csv")
+        if not path: return
+        import csv
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Rank", "Roll", "Name", "Attendance %", "Marks", "Grade", "Attendance Status"])
+            writer.writerows(rows)
+        messagebox.showinfo("Export complete", f"Report saved to:\n{path}")
+
+    def performance_summary(self):
+        rows = self.db.execute("SELECT attendance, marks FROM students").fetchall()
+        if not rows:
+            messagebox.showinfo("Summary", "No student records found.")
+            return
+        n = len(rows)
+        avg_marks = sum(r["marks"] for r in rows) / n
+        avg_att = sum(r["attendance"] for r in rows) / n
+        highest = max(r["marks"] for r in rows)
+        lowest = min(r["marks"] for r in rows)
+        passed = sum(1 for r in rows if r["marks"] >= 40)
+        messagebox.showinfo("Performance Summary",
+            f"Total students: {n}\nAverage marks: {avg_marks:.2f}/100\n"
+            f"Average attendance: {avg_att:.2f}%\nHighest marks: {highest:.1f}\n"
+            f"Lowest marks: {lowest:.1f}\nMarks >= 40: {passed}\nMarks < 40: {n-passed}")
+
+    def predict_selected_student(self):
+        selected = self.student_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select student", "Select a student row first.")
+            return
+        roll = self.student_tree.item(selected[0], "values")[0]
+        s = self.db.execute("SELECT * FROM students WHERE roll=?", (roll,)).fetchone()
+        # Simple transparent rule-based estimate, NOT machine learning.
+        score = s["marks"] * 0.7 + s["attendance"] * 0.3
+        if score >= 75:
+            category = "Good performance estimate"
+        elif score >= 50:
+            category = "Average performance estimate"
+        else:
+            category = "Needs academic support estimate"
+        messagebox.showinfo("Performance Estimate",
+            f"Student: {s['name']} ({s['roll']})\n"
+            f"Marks: {s['marks']:.1f}/100\nAttendance: {s['attendance']:.1f}%\n"
+            f"Combined indicator: {score:.1f}/100\n\n{category}\n\n"
+            "This is a simple rule-based estimate, not a trained AI/ML prediction. "
+            "It must not be used as a final judgment about a student.")
+
+    # ---------------- REPORT CARD ----------------
+    def generate_report_card(self):
+        selected = self.student_tree.selection()
+        if selected:
+            roll = self.student_tree.item(selected[0], "values")[0]
+        else:
+            roll = self.student_vars["roll"].get().strip()
+        if not roll:
+            messagebox.showwarning("Select student", "Select a student or enter their roll number.")
+            return
+        s = self.db.execute("SELECT * FROM students WHERE roll=?", (roll,)).fetchone()
+        if not s:
+            messagebox.showerror("Not found", "Student record not found.")
+            return
+        cgpa = self.calculate_cgpa_value(roll)
+        assignments = self.db.execute(
+            "SELECT title,due_date,status,marks FROM assignments WHERE roll=? ORDER BY id", (roll,)
+        ).fetchall()
+        assignment_text = "\n".join(
+            f"  - {a['title']} | Due: {a['due_date'] or 'Not set'} | {a['status']} | Marks: {a['marks'] if a['marks'] is not None else 'N/A'}"
+            for a in assignments
+        ) or "  No assignments recorded."
+        report = (
+            "STUDENT REPORT CARD\n"
+            "===================\n"
+            f"Generated: {date.today().isoformat()}\n\n"
+            f"Name: {s['name']}\nRoll Number: {s['roll']}\nBranch: {s['branch']}\n"
+            f"Semester: {s['semester']}\nPhone: {s['phone'] or 'N/A'}\n\n"
+            f"Marks: {s['marks']:.1f}/100\nGrade: {self.grade_for(s['marks'])}\n"
+            f"Attendance: {s['attendance']:.1f}%\n"
+            f"Estimated CGPA from entered subjects: {cgpa if cgpa is not None else 'Not calculated'}\n\n"
+            f"Assignments:\n{assignment_text}\n\n"
+            "Note: This is a project-generated report. Confirm grading rules with your institution.\n"
+        )
+        path = filedialog.asksaveasfilename(
+            title="Save Report Card", defaultextension=".txt",
+            filetypes=[("Text report", "*.txt")],
+            initialfile=f"report_card_{roll}.txt"
+        )
+        if not path: return
+        Path(path).write_text(report, encoding="utf-8")
+        messagebox.showinfo("Report card saved", f"Report card saved to:\n{path}")
+
+    # ---------------- CGPA ----------------
+    def build_cgpa_tab(self):
+        form = ttk.LabelFrame(self.cgpa_tab, text="Add Subject Grade and Credits", padding=10)
+        form.pack(fill="x")
+        self.subject_roll = tk.StringVar()
+        self.subject_name = tk.StringVar()
+        self.subject_gp = tk.StringVar()
+        self.subject_credits = tk.StringVar()
+        fields = [
+            ("Student roll number", self.subject_roll),
+            ("Subject name", self.subject_name),
+            ("Grade point (0-10)", self.subject_gp),
+            ("Credits (>0)", self.subject_credits),
+        ]
+        for i, (label, var) in enumerate(fields):
+            ttk.Label(form, text=label).grid(row=i, column=0, sticky="w", padx=5, pady=5)
+            ttk.Entry(form, textvariable=var, width=30).grid(row=i, column=1, padx=5, pady=5)
+        ttk.Button(form, text="Add Subject", command=self.add_subject).grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=7)
+        ttk.Button(form, text="Calculate CGPA for Roll", command=self.show_cgpa).grid(
+            row=5, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(form, text="Delete Selected Subject", command=self.delete_subject).grid(
+            row=6, column=0, columnspan=2, sticky="ew", pady=3)
+        cols = ("id", "roll", "subject", "gp", "credits", "weighted")
+        self.subject_tree = ttk.Treeview(self.cgpa_tab, columns=cols, show="headings", height=15)
+        for col, title, width in [
+            ("id", "ID", 60), ("roll", "Roll", 100), ("subject", "Subject", 220),
+            ("gp", "Grade Point", 120), ("credits", "Credits", 100), ("weighted", "GP × Credits", 140)
+        ]:
+            self.subject_tree.heading(col, text=title)
+            self.subject_tree.column(col, width=width, anchor="center")
+        self.subject_tree.pack(fill="both", expand=True, pady=10)
+        self.cgpa_result = ttk.Label(self.cgpa_tab, text="CGPA: —", font=("Arial", 12, "bold"))
+        self.cgpa_result.pack(anchor="w")
+
+    def add_subject(self):
+        roll, subject = self.subject_roll.get().strip(), self.subject_name.get().strip()
+        if not roll or not subject:
+            messagebox.showwarning("Missing", "Enter student roll number and subject name.")
+            return
+        if not self.db.execute("SELECT 1 FROM students WHERE roll=?", (roll,)).fetchone():
+            messagebox.showerror("Student not found", "Add the student first.")
+            return
+        try:
+            gp, credits = float(self.subject_gp.get()), float(self.subject_credits.get())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Grade point and credits must be numbers.")
+            return
+        if not 0 <= gp <= 10 or credits <= 0:
+            messagebox.showerror("Invalid range", "Grade point must be 0-10 and credits must be above 0.")
+            return
+        self.db.execute("INSERT INTO subjects(roll,subject,grade_point,credits) VALUES(?,?,?,?)",
+                        (roll, subject, gp, credits))
+        self.db.commit()
+        self.load_subjects()
+        messagebox.showinfo("Added", "Subject grade saved.")
+
+    def calculate_cgpa_value(self, roll):
+        rows = self.db.execute(
+            "SELECT grade_point,credits FROM subjects WHERE roll=?", (roll,)
+        ).fetchall()
+        total_credits = sum(r["credits"] for r in rows)
+        if not rows or total_credits == 0:
+            return None
+        return sum(r["grade_point"] * r["credits"] for r in rows) / total_credits
+
+    def show_cgpa(self):
+        roll = self.subject_roll.get().strip()
+        if not roll:
+            messagebox.showwarning("Enter roll", "Enter a student's roll number.")
+            return
+        cgpa = self.calculate_cgpa_value(roll)
+        if cgpa is None:
+            self.cgpa_result.config(text="CGPA: No subject grades entered for this roll.")
+        else:
+            self.cgpa_result.config(text=f"CGPA for {roll}: {cgpa:.2f} / 10")
+        self.load_subjects()
+
+    def load_subjects(self):
+        if not hasattr(self, "subject_tree"): return
+        for i in self.subject_tree.get_children(): self.subject_tree.delete(i)
+        rows = self.db.execute("SELECT * FROM subjects ORDER BY roll, subject").fetchall()
+        for r in rows:
+            self.subject_tree.insert("", "end", values=(
+                r["id"], r["roll"], r["subject"], f'{r["grade_point"]:.2f}',
+                f'{r["credits"]:.2f}', f'{r["grade_point"]*r["credits"]:.2f}'
+            ))
+
+    def delete_subject(self):
+        selected = self.subject_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select subject", "Select a subject row first.")
+            return
+        sid = self.subject_tree.item(selected[0], "values")[0]
+        self.db.execute("DELETE FROM subjects WHERE id=?", (sid,))
+        self.db.commit()
+        self.load_subjects()
+
+    # ---------------- ASSIGNMENT TRACKER ----------------
+    def build_assignment_tab(self):
+        form = ttk.LabelFrame(self.assignment_tab, text="Assignment Details", padding=10)
+        form.pack(fill="x")
+        self.assignment_roll = tk.StringVar()
+        self.assignment_title = tk.StringVar()
+        self.assignment_due = tk.StringVar(value=date.today().isoformat())
+        self.assignment_status = tk.StringVar(value="Pending")
+        self.assignment_marks = tk.StringVar()
+        fields = [
+            ("Student roll", self.assignment_roll), ("Assignment title", self.assignment_title),
+            ("Due date (YYYY-MM-DD)", self.assignment_due), ("Status", self.assignment_status),
+            ("Marks (optional)", self.assignment_marks),
+        ]
+        for i, (label, var) in enumerate(fields):
+            ttk.Label(form, text=label).grid(row=i, column=0, sticky="w", padx=5, pady=5)
+            if label == "Status":
+                ttk.Combobox(form, textvariable=var, values=("Pending", "Submitted", "Late"),
+                             state="readonly", width=27).grid(row=i, column=1, padx=5, pady=5)
+            else:
+                ttk.Entry(form, textvariable=var, width=30).grid(row=i, column=1, padx=5, pady=5)
+        ttk.Button(form, text="Add Assignment", command=self.add_assignment).grid(
+            row=5, column=0, columnspan=2, sticky="ew", pady=6)
+        ttk.Button(form, text="Update Selected Status/Marks", command=self.update_assignment).grid(
+            row=6, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(form, text="Delete Selected Assignment", command=self.delete_assignment).grid(
+            row=7, column=0, columnspan=2, sticky="ew", pady=3)
+        cols = ("id", "roll", "student", "title", "due", "status", "marks")
+        self.assignment_tree = ttk.Treeview(self.assignment_tab, columns=cols, show="headings", height=13)
+        for col, title, width in [
+            ("id", "ID", 50), ("roll", "Roll", 90), ("student", "Student", 150),
+            ("title", "Assignment", 220), ("due", "Due Date", 110),
+            ("status", "Status", 100), ("marks", "Marks", 80)
+        ]:
+            self.assignment_tree.heading(col, text=title)
+            self.assignment_tree.column(col, width=width, anchor="center")
+        self.assignment_tree.pack(fill="both", expand=True, pady=10)
+        self.assignment_tree.bind("<<TreeviewSelect>>", self.select_assignment)
+
+    def add_assignment(self):
+        roll = self.assignment_roll.get().strip()
+        title = self.assignment_title.get().strip()
+        due = self.assignment_due.get().strip()
+        status = self.assignment_status.get().strip() or "Pending"
+        marks_text = self.assignment_marks.get().strip()
+        if not roll or not title:
+            messagebox.showwarning("Missing details", "Enter student roll and assignment title.")
+            return
+        if not self.db.execute("SELECT 1 FROM students WHERE roll=?", (roll,)).fetchone():
+            messagebox.showerror("Student not found", "Add the student first.")
+            return
+        if due:
+            try:
+                date.fromisoformat(due)
+            except ValueError:
+                messagebox.showerror("Invalid date", "Use YYYY-MM-DD, e.g. 2026-11-05.")
+                return
+        try:
+            marks = float(marks_text) if marks_text else None
+        except ValueError:
+            messagebox.showerror("Invalid marks", "Marks must be a number or left blank.")
+            return
+        if marks is not None and not 0 <= marks <= 100:
+            messagebox.showerror("Invalid marks", "Assignment marks must be between 0 and 100.")
+            return
+        self.db.execute("""INSERT INTO assignments(roll,title,due_date,status,marks)
+                           VALUES(?,?,?,?,?)""", (roll, title, due or None, status, marks))
+        self.db.commit()
+        self.load_assignments()
+        messagebox.showinfo("Added", "Assignment saved.")
+
+    def select_assignment(self, _event=None):
+        selected = self.assignment_tree.selection()
+        if not selected: return
+        vals = self.assignment_tree.item(selected[0], "values")
+        self.assignment_roll.set(vals[1])
+        self.assignment_title.set(vals[3])
+        self.assignment_due.set(vals[4])
+        self.assignment_status.set(vals[5])
+        self.assignment_marks.set("" if vals[6] == "N/A" else vals[6])
+
+    def update_assignment(self):
+        selected = self.assignment_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select assignment", "Select an assignment row first.")
+            return
+        aid = self.assignment_tree.item(selected[0], "values")[0]
+        status = self.assignment_status.get()
+        marks_text = self.assignment_marks.get().strip()
+        try:
+            marks = float(marks_text) if marks_text else None
+        except ValueError:
+            messagebox.showerror("Invalid marks", "Marks must be numeric or blank.")
+            return
+        if marks is not None and not 0 <= marks <= 100:
+            messagebox.showerror("Invalid marks", "Marks must be between 0 and 100.")
+            return
+        self.db.execute("UPDATE assignments SET status=?, marks=? WHERE id=?", (status, marks, aid))
+        self.db.commit()
+        self.load_assignments()
+        messagebox.showinfo("Updated", "Assignment updated.")
+
+    def delete_assignment(self):
+        selected = self.assignment_tree.selection()
+        if not selected:
+            messagebox.showwarning("Select assignment", "Select an assignment row first.")
+            return
+        aid = self.assignment_tree.item(selected[0], "values")[0]
+        if messagebox.askyesno("Confirm", "Delete this assignment?"):
+            self.db.execute("DELETE FROM assignments WHERE id=?", (aid,))
+            self.db.commit()
+            self.load_assignments()
+
+    def load_assignments(self):
+        if not hasattr(self, "assignment_tree"): return
+        for i in self.assignment_tree.get_children(): self.assignment_tree.delete(i)
+        rows = self.db.execute("""
+            SELECT a.*, s.name AS student_name FROM assignments a
+            JOIN students s ON a.roll=s.roll ORDER BY a.due_date, a.id
+        """).fetchall()
+        for a in rows:
+            self.assignment_tree.insert("", "end", values=(
+                a["id"], a["roll"], a["student_name"], a["title"], a["due_date"] or "",
+                a["status"], "N/A" if a["marks"] is None else f'{a["marks"]:.1f}'
+            ))
+
+    # ---------------- REFRESH / CLOSE ----------------
+    def refresh_all(self):
+        self.load_students()
+        self.load_attendance_report()
+        self.load_subjects()
+        self.load_assignments()
+
+    def close_app(self):
+        self.db.close()
+        self.root.destroy()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = StudentManagementSystem(root)
+    root.protocol("WM_DELETE_WINDOW", app.close_app)
+    root.mainloop()
